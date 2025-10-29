@@ -1,8 +1,9 @@
-use std::io::{self, Write};
+use eframe::egui;
 use rand::Rng;
 
 const BOARD_WIDTH: usize = 8;
 const BOARD_HEIGHT: usize = 8;
+const TILE_SIZE: f32 = 40.0;
 
 // 不同颜色的宝石用数字表示：1=红，2=绿，3=蓝，4=黄，5=紫
 type Board = [[u8; BOARD_WIDTH]; BOARD_HEIGHT];
@@ -10,6 +11,9 @@ type Board = [[u8; BOARD_WIDTH]; BOARD_HEIGHT];
 struct Game {
     board: Board,
     score: u32,
+    selected: Option<(usize, usize)>,
+    pending_removal: Vec<(usize, usize)>,
+    animation_timer: f32,
 }
 
 impl Game {
@@ -17,6 +21,9 @@ impl Game {
         let mut game = Game {
             board: [[0; BOARD_WIDTH]; BOARD_HEIGHT],
             score: 0,
+            selected: None,
+            pending_removal: Vec::new(),
+            animation_timer: 0.0,
         };
         game.fill_board();
         // 确保初始状态没有三消
@@ -36,35 +43,16 @@ impl Game {
         }
     }
 
-    // 打印游戏板
-    fn print_board(&self) {
-        print!("{}[2J{}[H", 27 as char, 27 as char); // 清屏
-        println!("=== 三消游戏 === 分数: {}\n", self.score);
-        print!("   ");
-        for j in 0..BOARD_WIDTH {
-            print!(" {} ", j);
+    // 获取颜色对应的 RGB
+    fn get_color(cell: u8) -> egui::Color32 {
+        match cell {
+            1 => egui::Color32::from_rgb(255, 80, 80),   // 红
+            2 => egui::Color32::from_rgb(80, 255, 80),   // 绿
+            3 => egui::Color32::from_rgb(80, 80, 255),   // 蓝
+            4 => egui::Color32::from_rgb(255, 255, 80),  // 黄
+            5 => egui::Color32::from_rgb(255, 80, 255),  // 紫
+            _ => egui::Color32::from_rgb(200, 200, 200), // 灰
         }
-        println!();
-        
-        for (i, row) in self.board.iter().enumerate() {
-            print!("{}  ", i);
-            for &cell in row.iter() {
-                let symbol = match cell {
-                    1 => "🔴",
-                    2 => "🟢",
-                    3 => "🔵",
-                    4 => "🟡",
-                    5 => "🟣",
-                    _ => "⚪",
-                };
-                print!("{} ", symbol);
-            }
-            println!();
-        }
-        println!("\n操作说明：");
-        println!("输入格式：行 列 (例如: 0 1 表示选择第0行第1列)");
-        println!("先选择第一个方块，再选择相邻的第二个方块来交换");
-        println!("输入 'q' 退出游戏\n");
     }
 
     // 查找所有可以消除的匹配（三个或更多连续相同）
@@ -139,7 +127,7 @@ impl Game {
             return false;
         }
 
-        // 计算分数：3个=100分，4个=200分，5个及以上=300分
+        // 计算分数
         let match_count = matches.len();
         if match_count >= 5 {
             self.score += 300;
@@ -148,6 +136,9 @@ impl Game {
         } else {
             self.score += 100;
         }
+
+        // 记录要消除的方块
+        self.pending_removal = matches.clone();
 
         // 消除匹配的方块（设为0）
         for (i, j) in &matches {
@@ -195,7 +186,6 @@ impl Game {
 
     // 交换两个相邻的方块
     fn swap(&mut self, row1: usize, col1: usize, row2: usize, col2: usize) -> bool {
-        // 检查是否相邻
         let row_diff = (row1 as i32 - row2 as i32).abs();
         let col_diff = (col1 as i32 - col2 as i32).abs();
         
@@ -203,7 +193,6 @@ impl Game {
             return false;
         }
 
-        // 交换
         let temp = self.board[row1][col1];
         self.board[row1][col1] = self.board[row2][col2];
         self.board[row2][col2] = temp;
@@ -213,28 +202,24 @@ impl Game {
 
     // 检查是否有可用的移动
     fn has_moves(&self) -> bool {
-        // 检查水平和垂直相邻的方块
         for i in 0..BOARD_HEIGHT {
             for j in 0..BOARD_WIDTH {
-                // 检查右邻居
                 if j < BOARD_WIDTH - 1 {
                     let mut test_board = self.board;
                     test_board[i][j] = self.board[i][j + 1];
                     test_board[i][j + 1] = self.board[i][j];
                     
-                    // 临时创建游戏来检查匹配
-                    let temp_game = Game { board: test_board, score: 0 };
+                    let temp_game = Game { board: test_board, score: 0, selected: None, pending_removal: Vec::new(), animation_timer: 0.0 };
                     if temp_game.find_matches().len() > 0 {
                         return true;
                     }
                 }
-                // 检查下邻居
                 if i < BOARD_HEIGHT - 1 {
                     let mut test_board = self.board;
                     test_board[i][j] = self.board[i + 1][j];
                     test_board[i + 1][j] = self.board[i][j];
                     
-                    let temp_game = Game { board: test_board, score: 0 };
+                    let temp_game = Game { board: test_board, score: 0, selected: None, pending_removal: Vec::new(), animation_timer: 0.0 };
                     if temp_game.find_matches().len() > 0 {
                         return true;
                     }
@@ -244,116 +229,156 @@ impl Game {
         false
     }
 
-    // 游戏主循环
-    fn play(&mut self) {
-        loop {
-            self.print_board();
+    // 处理方块点击
+    fn handle_click(&mut self, row: usize, col: usize) {
+        if let Some((sel_row, sel_col)) = self.selected {
+            if sel_row == row && sel_col == col {
+                // 取消选择
+                self.selected = None;
+            } else if (sel_row == row && (sel_col as i32 - col as i32).abs() == 1)
+                || (sel_col == col && (sel_row as i32 - row as i32).abs() == 1)
+            {
+                // 尝试交换
+                if self.swap(sel_row, sel_col, row, col) {
+                    let matches = self.find_matches();
+                    if matches.is_empty() {
+                        // 没有匹配，交换回来
+                        self.swap(sel_row, sel_col, row, col);
+                    } else {
+                        // 有匹配，消除
+                        self.remove_matches();
+                    }
+                }
+                self.selected = None;
+            } else {
+                // 选择新方块
+                self.selected = Some((row, col));
+            }
+        } else {
+            // 选择方块
+            self.selected = Some((row, col));
+        }
+    }
 
-            // 如果当前状态有自动三消，先消除
+    // 更新游戏状态
+    fn update(&mut self, ctx: &egui::Context) {
+        self.animation_timer += ctx.input(|i| i.unstable_dt);
+
+        // 自动消除
+        if self.pending_removal.is_empty() && self.animation_timer > 0.5 {
             while self.remove_matches() {
-                std::thread::sleep(std::time::Duration::from_millis(500));
-                self.print_board();
-            }
-
-            // 检查是否还有可用的移动
-            if !self.has_moves() {
-                println!("没有可用的移动！重新洗牌...");
-                self.fill_board();
-                continue;
-            }
-
-            // 获取用户输入
-            print!("选择第一个方块 (行 列): ");
-            io::stdout().flush().unwrap();
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-            
-            if input.trim() == "q" {
-                println!("游戏结束！最终分数: {}", self.score);
+                self.animation_timer = 0.0;
                 break;
             }
+        }
 
-            let coords1: Vec<&str> = input.trim().split_whitespace().collect();
-            if coords1.len() != 2 {
-                println!("输入格式错误！请使用：行 列");
-                continue;
-            }
-
-            let row1: usize = match coords1[0].parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    println!("无效的行号！");
-                    continue;
-                }
-            };
-
-            let col1: usize = match coords1[1].parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    println!("无效的列号！");
-                    continue;
-                }
-            };
-
-            if row1 >= BOARD_HEIGHT || col1 >= BOARD_WIDTH {
-                println!("坐标超出范围！行: 0-{}, 列: 0-{}", BOARD_HEIGHT - 1, BOARD_WIDTH - 1);
-                continue;
-            }
-
-            print!("选择第二个方块 (行 列): ");
-            io::stdout().flush().unwrap();
-            let mut input2 = String::new();
-            io::stdin().read_line(&mut input2).unwrap();
-
-            let coords2: Vec<&str> = input2.trim().split_whitespace().collect();
-            if coords2.len() != 2 {
-                println!("输入格式错误！请使用：行 列");
-                continue;
-            }
-
-            let row2: usize = match coords2[0].parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    println!("无效的行号！");
-                    continue;
-                }
-            };
-
-            let col2: usize = match coords2[1].parse() {
-                Ok(n) => n,
-                Err(_) => {
-                    println!("无效的列号！");
-                    continue;
-                }
-            };
-
-            if row2 >= BOARD_HEIGHT || col2 >= BOARD_WIDTH {
-                println!("坐标超出范围！行: 0-{}, 列: 0-{}", BOARD_HEIGHT - 1, BOARD_WIDTH - 1);
-                continue;
-            }
-
-            // 交换方块
-            if !self.swap(row1, col1, row2, col2) {
-                println!("这两个方块不相邻！只能交换相邻的方块。");
-                continue;
-            }
-
-            // 检查交换后是否有匹配
-            let matches = self.find_matches();
-            if matches.is_empty() {
-                // 没有匹配，交换回来
-                self.swap(row1, col1, row2, col2);
-                println!("交换后没有形成三消！已自动撤销。");
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-            } else {
-                // 有匹配，继续消除
-                self.remove_matches();
+        // 检查是否有可用移动
+        if self.pending_removal.is_empty() && !self.has_moves() {
+            self.fill_board();
+            while self.find_matches().len() > 0 {
+                self.fill_board();
             }
         }
+
+        // 清除待消除标记
+        if self.animation_timer > 0.3 && !self.pending_removal.is_empty() {
+            self.pending_removal.clear();
+            self.animation_timer = 0.0;
+        }
+
+        ctx.request_repaint();
     }
 }
 
-fn main() {
-    let mut game = Game::new();
-    game.play();
+impl eframe::App for Game {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.update(ctx);
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                ui.heading("三消游戏");
+                ui.label(format!("分数: {}", self.score));
+                ui.add_space(20.0);
+
+                // 绘制游戏板
+                let board_size = TILE_SIZE * BOARD_WIDTH as f32;
+                let (response, painter) = ui.allocate_painter(
+                    egui::Vec2::new(board_size + 20.0, board_size + 20.0),
+                    egui::Sense::click(),
+                );
+
+                let rect = response.rect;
+                let start_x = rect.left() + 10.0;
+                let start_y = rect.top() + 10.0;
+
+                // 绘制网格和方块
+                for i in 0..BOARD_HEIGHT {
+                    for j in 0..BOARD_WIDTH {
+                        let x = start_x + j as f32 * TILE_SIZE;
+                        let y = start_y + i as f32 * TILE_SIZE;
+                        
+                        let tile_rect = egui::Rect::from_min_size(
+                            egui::Pos2::new(x, y),
+                            egui::Vec2::new(TILE_SIZE - 2.0, TILE_SIZE - 2.0),
+                        );
+
+                        // 检查是否被点击
+                        if response.clicked() {
+                            let click_pos = response.interact_pointer_pos().unwrap();
+                            if tile_rect.contains(click_pos) {
+                                self.handle_click(i, j);
+                            }
+                        }
+
+                        // 绘制方块背景
+                        let mut color = Self::get_color(self.board[i][j]);
+                        
+                        // 如果被选中，改变颜色
+                        if let Some((sel_row, sel_col)) = self.selected {
+                            if sel_row == i && sel_col == j {
+                                color = color.gamma_multiply(1.5);
+                            }
+                        }
+
+                        // 如果待消除，变暗
+                        if self.pending_removal.contains(&(i, j)) {
+                            color = color.gamma_multiply(0.3);
+                        }
+
+                        painter.rect_filled(tile_rect, 2.0, color);
+                        
+                        // 绘制边框
+                        let border_color = if let Some((sel_row, sel_col)) = self.selected {
+                            if sel_row == i && sel_col == j {
+                                egui::Color32::WHITE
+                            } else {
+                                egui::Color32::from_rgb(150, 150, 150)
+                            }
+                        } else {
+                            egui::Color32::from_rgb(150, 150, 150)
+                        };
+                        painter.rect_stroke(tile_rect, 2.0, (1.0, border_color));
+                    }
+                }
+
+                ui.add_space(20.0);
+                ui.label("操作说明：点击相邻的两个方块来交换");
+            });
+        });
+    }
+}
+
+fn main() -> eframe::Result<()> {
+    let options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([400.0, 500.0])
+            .with_title("三消游戏"),
+        ..Default::default()
+    };
+    
+    eframe::run_native(
+        "三消游戏",
+        options,
+        Box::new(|_cc| Box::new(Game::new())),
+    )
 }
