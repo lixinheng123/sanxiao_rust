@@ -1,4 +1,4 @@
-use eframe::egui;
+ use eframe::egui;
 use rand::Rng;
 
 const BOARD_WIDTH: usize = 8;
@@ -11,9 +11,11 @@ type Board = [[u8; BOARD_WIDTH]; BOARD_HEIGHT];
 struct Game {
     board: Board,
     score: u32,
+    target_score: u32,
     selected: Option<(usize, usize)>,
     pending_removal: Vec<(usize, usize)>,
     animation_timer: f32,
+    game_over: bool,
 }
 
 impl Game {
@@ -21,9 +23,11 @@ impl Game {
         let mut game = Game {
             board: [[0; BOARD_WIDTH]; BOARD_HEIGHT],
             score: 0,
+            target_score: 1000,
             selected: None,
             pending_removal: Vec::new(),
             animation_timer: 0.0,
+            game_over: false,
         };
         game.fill_board();
         // 确保初始状态没有三消
@@ -209,7 +213,15 @@ impl Game {
                     test_board[i][j] = self.board[i][j + 1];
                     test_board[i][j + 1] = self.board[i][j];
                     
-                    let temp_game = Game { board: test_board, score: 0, selected: None, pending_removal: Vec::new(), animation_timer: 0.0 };
+                    let temp_game = Game { 
+                        board: test_board, 
+                        score: 0, 
+                        target_score: 0, 
+                        selected: None, 
+                        pending_removal: Vec::new(), 
+                        animation_timer: 0.0, 
+                        game_over: false 
+                    };
                     if temp_game.find_matches().len() > 0 {
                         return true;
                     }
@@ -219,7 +231,15 @@ impl Game {
                     test_board[i][j] = self.board[i + 1][j];
                     test_board[i + 1][j] = self.board[i][j];
                     
-                    let temp_game = Game { board: test_board, score: 0, selected: None, pending_removal: Vec::new(), animation_timer: 0.0 };
+                    let temp_game = Game { 
+                        board: test_board, 
+                        score: 0, 
+                        target_score: 0, 
+                        selected: None, 
+                        pending_removal: Vec::new(), 
+                        animation_timer: 0.0, 
+                        game_over: false 
+                    };
                     if temp_game.find_matches().len() > 0 {
                         return true;
                     }
@@ -274,10 +294,27 @@ impl Game {
 
         // 检查是否有可用移动
         if self.pending_removal.is_empty() && !self.has_moves() {
-            self.fill_board();
-            while self.find_matches().len() > 0 {
-                self.fill_board();
+            if !self.game_over {
+                // 没有可用移动时，先尝试重新洗牌
+                let attempts = 5;
+                let mut shuffled = false;
+                for _ in 0..attempts {
+                    self.fill_board();
+                    if self.has_moves() {
+                        shuffled = true;
+                        break;
+                    }
+                }
+                // 如果重新洗牌后还是没有可用移动，游戏结束
+                if !shuffled {
+                    self.game_over = true;
+                }
             }
+        }
+        
+        // 检查是否达到目标分数
+        if self.score >= self.target_score && !self.game_over {
+            self.game_over = true;
         }
 
         // 清除待消除标记
@@ -363,6 +400,7 @@ impl eframe::App for Game {
 
                 ui.add_space(20.0);
                 ui.label("操作说明：点击相邻的两个方块来交换");
+                ui.label(format!("目标：达到 {} 分", self.target_score));
             });
         });
     }
@@ -371,7 +409,7 @@ impl eframe::App for Game {
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([400.0, 500.0])
+            .with_inner_size([400.0, 550.0])
             .with_title("三消游戏"),
         ..Default::default()
     };
@@ -379,6 +417,42 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "三消游戏",
         options,
-        Box::new(|_cc| Box::new(Game::new())),
+        Box::new(|cc| {
+            // 配置中文字体
+            let mut fonts = egui::FontDefinitions::default();
+            
+            // 尝试使用系统字体
+            #[cfg(target_os = "windows")]
+            {
+                // Windows 系统中文字体路径
+                if let Ok(font_data) = std::fs::read("C:/Windows/Fonts/msyh.ttc") {
+                    fonts.font_data.insert(
+                        "chinese".to_owned(),
+                        egui::FontData::from_owned(font_data),
+                    );
+                    fonts.families.get_mut(&egui::FontFamily::Proportional)
+                        .unwrap()
+                        .insert(0, "chinese".to_owned());
+                    fonts.families.get_mut(&egui::FontFamily::Monospace)
+                        .unwrap()
+                        .push("chinese".to_owned());
+                } else if let Ok(font_data) = std::fs::read("C:/Windows/Fonts/simsun.ttc") {
+                    fonts.font_data.insert(
+                        "chinese".to_owned(),
+                        egui::FontData::from_owned(font_data),
+                    );
+                    fonts.families.get_mut(&egui::FontFamily::Proportional)
+                        .unwrap()
+                        .insert(0, "chinese".to_owned());
+                    fonts.families.get_mut(&egui::FontFamily::Monospace)
+                        .unwrap()
+                        .push("chinese".to_owned());
+                }
+            }
+            
+            cc.egui_ctx.set_fonts(fonts);
+            
+            Box::new(Game::new())
+        }),
     )
 }
