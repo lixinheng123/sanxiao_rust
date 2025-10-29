@@ -334,7 +334,22 @@ impl eframe::App for Game {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.vertical_centered(|ui| {
                 ui.heading("三消游戏");
-                ui.label(format!("分数: {}", self.score));
+                ui.label(format!("分数: {} / {}", self.score, self.target_score));
+                
+                // 检查游戏结束
+                if self.game_over || self.score >= self.target_score {
+                    ui.add_space(10.0);
+                    ui.heading(if self.score >= self.target_score {
+                        "恭喜过关！"
+                    } else {
+                        "游戏结束"
+                    });
+                    if ui.button("重新开始").clicked() {
+                        *self = Game::new();
+                    }
+                    return;
+                }
+                
                 ui.add_space(20.0);
 
                 // 绘制游戏板
