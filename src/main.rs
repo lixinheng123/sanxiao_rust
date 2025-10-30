@@ -4,9 +4,21 @@ use rand::Rng;
 const BOARD_WIDTH: usize = 8;
 const BOARD_HEIGHT: usize = 8;
 const TILE_SIZE: f32 = 40.0;
+const ANIMATION_SPEED: f32 = 300.0; // 像素/秒
 
 // 不同颜色的宝石用数字表示：1=红，2=绿，3=蓝，4=黄，5=紫
 type Board = [[u8; BOARD_WIDTH]; BOARD_HEIGHT];
+
+// 方块动画状态
+#[derive(Clone)]
+struct TileAnimation {
+    start_row: f32,
+    target_row: f32,
+    current_row: f32,
+    col: usize,
+    value: u8,
+    is_active: bool,
+}
 
 struct Game {
     board: Board,
@@ -16,6 +28,8 @@ struct Game {
     pending_removal: Vec<(usize, usize)>,
     animation_timer: f32,
     game_over: bool,
+    falling_tiles: Vec<TileAnimation>, // 正在下落的方块
+    is_animating: bool, // 是否正在播放动画
 }
 
 impl Game {
@@ -23,11 +37,13 @@ impl Game {
         let mut game = Game {
             board: [[0; BOARD_WIDTH]; BOARD_HEIGHT],
             score: 0,
-            target_score: 1000,
+            target_score: 2000,
             selected: None,
             pending_removal: Vec::new(),
             animation_timer: 0.0,
             game_over: false,
+            falling_tiles: Vec::new(),
+            is_animating: false,
         };
         game.fill_board();
         // 确保初始状态没有三消
@@ -149,17 +165,58 @@ impl Game {
             self.board[*i][*j] = 0;
         }
 
-        // 让方块下落
-        self.drop_tiles();
-
-        // 填充空白位置
-        self.fill_empty();
+        // 准备并播放下落动画（基于消除后的棋盘状态，不要在动画前更新棋盘）
+        self.prepare_fall_animation();
 
         true
     }
 
-    // 让方块下落
-    fn drop_tiles(&mut self) {
+    // 准备下落动画
+    fn prepare_fall_animation(&mut self) {
+        self.falling_tiles.clear();
+        self.is_animating = true;
+        
+        for j in 0..BOARD_WIDTH {
+            // 计算每个方块需要下落的距离
+            let mut fall_distances = vec![0; BOARD_HEIGHT];
+            let mut write_pos = BOARD_HEIGHT - 1;
+            
+            for read_pos in (0..BOARD_HEIGHT).rev() {
+                if self.board[read_pos][j] != 0 {
+                    let fall_distance = write_pos as i32 - read_pos as i32;
+                    if fall_distance > 0 {
+                        fall_distances[read_pos] = fall_distance as usize;
+                    }
+                    if write_pos > 0 {
+                        write_pos -= 1;
+                    }
+                }
+            }
+            
+            // 创建动画对象
+            for i in 0..BOARD_HEIGHT {
+                if fall_distances[i] > 0 && self.board[i][j] != 0 {
+                    self.falling_tiles.push(TileAnimation {
+                        start_row: i as f32,
+                        target_row: (i + fall_distances[i]) as f32,
+                        current_row: i as f32,
+                        col: j,
+                        value: self.board[i][j],
+                        is_active: true,
+                    });
+                }
+            }
+        }
+        
+        // 如果没有创建任何动画对象，说明不需要动画
+        if self.falling_tiles.is_empty() {
+            self.is_animating = false;
+        }
+    }
+
+    // 带动画的方块下落
+    fn drop_tiles_with_animation(&mut self) {
+        // 在动画过程中，更新实际棋盘
         for j in 0..BOARD_WIDTH {
             let mut write_pos = BOARD_HEIGHT - 1;
             for read_pos in (0..BOARD_HEIGHT).rev() {
@@ -174,6 +231,61 @@ impl Game {
                 }
             }
         }
+    }
+    
+    // 更新下落动画
+    fn update_fall_animation(&mut self, delta_time: f32) -> bool {
+        if !self.is_animating {
+            return false;
+        }
+        if self.falling_tiles.is_empty() {
+            // 如果没有动画对象但标记为正在动画，清除标记
+            self.is_animating = false;
+            return false;
+        }
+        
+        let mut all_finished = true;
+        let pixel_delta = ANIMATION_SPEED * delta_time / TILE_SIZE;
+        
+        for tile in &mut self.falling_tiles {
+            if tile.is_active && tile.current_row < tile.target_row {
+                tile.current_row += pixel_delta;
+                if tile.current_row >= tile.target_row {
+                    tile.current_row = tile.target_row;
+                    tile.is_active = false;
+                } else {
+                    all_finished = false;
+                }
+            }
+        }
+        
+        if all_finished {
+            // 动画完成后，更新棋盘状态（把方块移到正确位置）
+            self.drop_tiles_with_animation();
+            
+            // 检查是否有新的匹配需要消除
+            let has_matches = !self.find_matches().is_empty();
+            
+            if has_matches {
+                // 有新的匹配，清除动画状态，重置计时器以便立即触发下一轮消除
+                self.falling_tiles.clear();
+                self.is_animating = false;
+                self.animation_timer = 0.6; // 设置为大于0.5，让update函数立即触发消除
+            } else {
+                // 没有新匹配，填充顶部空白位置的新方块
+                self.fill_empty();
+                // 让新方块下落（更新棋盘状态）
+                self.drop_tiles_with_animation();
+                // 检查新方块是否需要下落动画
+                self.prepare_fall_animation();
+                // 如果 prepare_fall_animation 没有创建任何动画（因为新方块已经在正确位置），则清除动画状态
+                if self.falling_tiles.is_empty() {
+                    self.is_animating = false;
+                }
+            }
+        }
+        
+        !all_finished
     }
 
     // 填充空白位置
@@ -220,7 +332,9 @@ impl Game {
                         selected: None, 
                         pending_removal: Vec::new(), 
                         animation_timer: 0.0, 
-                        game_over: false 
+                        game_over: false,
+                        falling_tiles: Vec::new(),
+                        is_animating: false,
                     };
                     if temp_game.find_matches().len() > 0 {
                         return true;
@@ -238,7 +352,9 @@ impl Game {
                         selected: None, 
                         pending_removal: Vec::new(), 
                         animation_timer: 0.0, 
-                        game_over: false 
+                        game_over: false,
+                        falling_tiles: Vec::new(),
+                        is_animating: false,
                     };
                     if temp_game.find_matches().len() > 0 {
                         return true;
@@ -282,10 +398,52 @@ impl Game {
 
     // 更新游戏状态
     fn update(&mut self, ctx: &egui::Context) {
-        self.animation_timer += ctx.input(|i| i.unstable_dt);
+        let delta_time = ctx.input(|i| i.unstable_dt);
+        self.animation_timer += delta_time;
 
-        // 自动消除
-        if self.pending_removal.is_empty() && self.animation_timer > 0.5 {
+        // 更新下落动画
+        if self.update_fall_animation(delta_time) {
+            // 动画进行中，不进行其他操作
+            return;
+        }
+
+        // 检查是否有空格需要处理（如果不在动画中且有空格）
+        if !self.is_animating && self.pending_removal.is_empty() {
+            let mut has_empty = false;
+            for i in 0..BOARD_HEIGHT {
+                for j in 0..BOARD_WIDTH {
+                    if self.board[i][j] == 0 {
+                        has_empty = true;
+                        break;
+                    }
+                }
+                if has_empty {
+                    break;
+                }
+            }
+            
+            if has_empty {
+                // 有空格，让方块下落并准备动画
+                self.drop_tiles_with_animation();
+                self.fill_empty();
+                self.drop_tiles_with_animation();
+                self.prepare_fall_animation();
+                // 如果仍然没有动画，说明不需要动画，但应该继续
+                if self.falling_tiles.is_empty() {
+                    self.is_animating = false;
+                }
+                return; // 等待下一帧继续
+            }
+        }
+
+        // 清除待消除标记
+        if self.animation_timer > 0.3 && !self.pending_removal.is_empty() {
+            self.pending_removal.clear();
+            self.animation_timer = 0.0;
+        }
+
+        // 自动消除（仅在动画结束后）
+        if self.pending_removal.is_empty() && !self.is_animating && self.animation_timer > 0.5 {
             while self.remove_matches() {
                 self.animation_timer = 0.0;
                 break;
@@ -323,7 +481,10 @@ impl Game {
             self.animation_timer = 0.0;
         }
 
-        ctx.request_repaint();
+        // 如果正在播放动画，持续请求重绘
+        if self.is_animating {
+            ctx.request_repaint();
+        }
     }
 }
 
@@ -374,13 +535,35 @@ impl eframe::App for Game {
                             egui::Vec2::new(TILE_SIZE - 2.0, TILE_SIZE - 2.0),
                         );
 
-                        // 检查是否被点击
-                        if response.clicked() {
-                            let click_pos = response.interact_pointer_pos().unwrap();
-                            if tile_rect.contains(click_pos) {
-                                self.handle_click(i, j);
+                        // 检查是否被点击（动画期间不能点击）
+                        if !self.is_animating && response.clicked() {
+                            if let Some(click_pos) = response.interact_pointer_pos() {
+                                if tile_rect.contains(click_pos) {
+                                    self.handle_click(i, j);
+                                }
                             }
                         }
+                    }
+                }
+
+                // 首先绘制固定位置的方块（非动画中的）
+                for i in 0..BOARD_HEIGHT {
+                    for j in 0..BOARD_WIDTH {
+                        // 检查这个位置是否有正在动画的方块
+                        let has_falling = self.falling_tiles.iter()
+                            .any(|t| t.col == j && (t.start_row as usize) == i);
+                        
+                        if has_falling {
+                            continue; // 这个位置的方块正在动画，稍后绘制
+                        }
+                        
+                        let x = start_x + j as f32 * TILE_SIZE;
+                        let y = start_y + i as f32 * TILE_SIZE;
+                        
+                        let tile_rect = egui::Rect::from_min_size(
+                            egui::Pos2::new(x, y),
+                            egui::Vec2::new(TILE_SIZE - 2.0, TILE_SIZE - 2.0),
+                        );
 
                         // 绘制方块背景
                         let mut color = Self::get_color(self.board[i][j]);
@@ -411,6 +594,25 @@ impl eframe::App for Game {
                         };
                         painter.rect_stroke(tile_rect, 2.0, (1.0, border_color));
                     }
+                }
+                
+                // 绘制正在下落的方块（覆盖在上方）
+                for tile in &self.falling_tiles {
+                    if !tile.is_active {
+                        continue;
+                    }
+                    
+                    let x = start_x + tile.col as f32 * TILE_SIZE;
+                    let y = start_y + tile.current_row * TILE_SIZE;
+                    
+                    let tile_rect = egui::Rect::from_min_size(
+                        egui::Pos2::new(x, y),
+                        egui::Vec2::new(TILE_SIZE - 2.0, TILE_SIZE - 2.0),
+                    );
+                    
+                    let color = Self::get_color(tile.value);
+                    painter.rect_filled(tile_rect, 2.0, color);
+                    painter.rect_stroke(tile_rect, 2.0, (1.0, egui::Color32::from_rgb(150, 150, 150)));
                 }
 
                 ui.add_space(20.0);
