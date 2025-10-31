@@ -9,27 +9,30 @@ const ANIMATION_SPEED: f32 = 300.0; // 像素/秒
 // 不同颜色的宝石用数字表示：1=红，2=绿，3=蓝，4=黄，5=紫
 type Board = [[u8; BOARD_WIDTH]; BOARD_HEIGHT];
 
-// 方块动画状态
-#[derive(Clone)]
+// 方块动画状态结构体
+// 用于存储单个方块在下落动画过程中的所有状态信息
+#[derive(Clone)]  // 允许克隆，便于复制动画对象
 struct TileAnimation {
-    start_row: f32,
-    target_row: f32,
-    current_row: f32,
-    col: usize,
-    value: u8,
-    is_active: bool,
+    start_row: f32,      // 动画开始时的起始行位置（浮点数，支持像素级精确定位）
+    target_row: f32,     // 动画结束时的目标行位置（方块最终要到达的行）
+    current_row: f32,    // 当前动画帧中的行位置（在start_row和target_row之间插值）
+    col: usize,          // 方块所在的列索引（0到BOARD_WIDTH-1）
+    value: u8,           // 方块的值/颜色（1=红，2=绿，3=蓝，4=黄，5=紫）
+    is_active: bool,     // 动画是否还在进行中（true=正在动画，false=已完成或未开始）
 }
 
+// 游戏主状态结构体
+// 存储整个游戏的所有状态数据，包括棋盘、分数、用户交互、动画状态等
 struct Game {
-    board: Board,
-    score: u32,
-    target_score: u32,
-    selected: Option<(usize, usize)>,
-    pending_removal: Vec<(usize, usize)>,
-    animation_timer: f32,
-    game_over: bool,
-    falling_tiles: Vec<TileAnimation>, // 正在下落的方块
-    is_animating: bool, // 是否正在播放动画
+    board: Board,                                    // 8x8的游戏棋盘，存储每个位置的宝石颜色值（0=空，1-5=不同颜色）
+    score: u32,                                      // 当前得分（累计分数）
+    target_score: u32,                               // 目标分数（达到此分数即可获胜）
+    selected: Option<(usize, usize)>,                // 当前选中的方块坐标（None=未选中，Some((行, 列))=已选中）
+    pending_removal: Vec<(usize, usize)>,            // 待消除的方块坐标列表（用于在消除前高亮显示）
+    animation_timer: f32,                            // 动画计时器（秒），用于控制消除高亮显示的时间
+    game_over: bool,                                 // 游戏是否结束（true=已结束，false=进行中）
+    falling_tiles: Vec<TileAnimation>,               // 正在下落的方块列表（存储所有当前正在播放下落动画的方块）
+    is_animating: bool,                              // 是否正在播放动画（true=有动画进行中，false=无动画，可以接受用户输入）
 }
 
 impl Game {
